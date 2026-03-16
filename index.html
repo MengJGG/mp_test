@@ -1,1 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gomoku · two-player (no handicap)</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none; /* prevent accidental selection while clicking */
+        }
 
+        body {
+            background: #f5f5f5;
+            min-height: 100vh;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+        }
+
+        .game-container {
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            padding: 24px 24px 30px 24px;
+            border-radius: 0;   /* strictly rectangular – no roundness */
+            border: 1px solid #ccc;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 18px;
+            font-size: 1.1rem;
+            font-weight: 400;
+            color: #222;
+            border-bottom: 1px solid #aaa;
+            padding-bottom: 8px;
+        }
+
+        .turn-indicator {
+            letter-spacing: 0.3px;
+        }
+
+        .turn-indicator span {
+            font-weight: 600;
+            margin-left: 6px;
+            color: #000;
+        }
+
+        .restart-btn {
+            background: none;
+            border: 1px solid #777;
+            padding: 4px 18px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            color: #222;
+            transition: none;  /* no fancy hover effects */
+            border-radius: 0;
+        }
+
+        .restart-btn:hover {
+            background-color: #eee;  /* only minimal feedback */
+        }
+
+        .restart-btn:active {
+            background-color: #ddd;
+        }
+
+        /* —— canvas-based board —— */
+        .board-wrapper {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        canvas {
+            display: block;
+            width: 520px;
+            height: 520px;
+            border: 1px solid #333;
+            background-color: #f0e9da;   /* light wood-like tint, still neutral */
+            cursor: pointer;
+            box-shadow: none;
+        }
+
+        .info-foot {
+            margin-top: 12px;
+            font-size: 0.9rem;
+            color: #444;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .info-foot small {
+            color: #666;
+        }
+
+        .winner-message {
+            font-weight: 500;
+            color: #1a4d1a;
+        }
+    </style>
+</head>
+<body>
+<div class="game-container">
+    <!-- status header -->
+    <div class="status-bar">
+        <div class="turn-indicator">
+            Turn: <span id="turnText">Black</span>
+        </div>
+        <button class="restart-btn" id="restartButton">↻ New game</button>
+    </div>
+
+    <!-- board canvas -->
+    <div class="board-wrapper">
+        <canvas id="boardCanvas" width="520" height="520"></canvas>
+    </div>
+
+    <!-- footer info / winner placeholder (no extra fluff) -->
+    <div class="info-foot">
+        <span>Black ●  |  White ○</span>
+        <span id="winMessage" class="winner-message"></span>
+    </div>
+</div>
+
+<script>
+    (function() {
+        // --- constants & settings ---
+        const BOARD_SIZE = 15;            // 15x15 standard board
+        const CELL_SIZE = 520 / BOARD_SIZE;  // 34.666...px, but we use float in drawing
+        const RADIUS = CELL_SIZE * 0.42;   // stone size ~14px, consistent
+
+        // game state
+        let board = Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(null)); // 'B' or 'W'
+        let currentPlayer = 'B';          // B starts (black)
+        let gameOver = false;
+        let winner = null;                // 'B', 'W', or null
+
+        // DOM elements
+        const canvas = document.getElementById('boardCanvas');
+        const ctx = canvas.getContext('2d');
+        const turnSpan = document.getElementById('turnText');
+        const winMessageSpan = document.getElementById('winMessage');
+        const restartBtn = document.getElementById('restartButton');
+
+        // --- helper: draw the whole board from scratch ---
+        function drawBoard() {
+            ctx.clearRect(0, 0, 520, 520);
+
+            // background (already set via css background, but we fill to be sure)
+            ctx.fillStyle = '#f0e9da';
+            ctx.fillRect(0, 0, 520, 520);
+
+            // draw grid lines (dark grey, thin)
+            ctx.lineWidth = 1.2;
+            ctx.strokeStyle = '#3d3d3d';
+
+            // vertical lines
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                const x = i * CELL_SIZE + CELL_SIZE/2; // align lines to center of cell? 
+                // traditional: lines intersect at cell centers.
+                // we want each intersection exactly at integer coordinate centers.
+                // margin: 0.5 cell offset to have symmetrical border.
+                const pos = i * CELL_SIZE + CELL_SIZE/2;
+                ctx.beginPath();
+                ctx.moveTo(pos, CELL_SIZE/2);
+                ctx.lineTo(pos, canvas.height - CELL_SIZE/2);
+                ctx.stroke();
+            }
+
+            // horizontal lines
+            for (let i = 0; i < BOARD_SIZE; i++) {
+                const pos = i * CELL_SIZE + CELL_SIZE/2;
+                ctx.beginPath();
+                ctx.moveTo(CELL_SIZE/2, pos);
+                ctx.lineTo(canvas.width - CELL_SIZE/2, pos);
+                ctx.stroke();
+            }
+
+            // draw small star points (handicap markers, but purely visual on empty board)
+            // traditional gomoku star points at (3,3), (11,3), (7,7), (3,11), (11,11) — 0-indexed.
+            // we draw small circles (no color fill) to keep it minimal.
+            const starPositions = [
+                [3,3], [11,3], [7,7], [3,11], [11,11]
+            ];
+            ctx.fillStyle = '#3d3d3d';
+            for (let [row, col] of starPositions) {
+                const x = col * CELL_SIZE + CELL_SIZE/2;
+                const y = row * CELL_SIZE + CELL_SIZE/2;
+                ctx.beginPath();
+                ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+
+            // draw all stones from board array
+            for (let row = 0; row < BOARD_SIZE; row++) {
+                for (let col = 0; col < BOARD_SIZE; col++) {
+                    const stone = board[row][col];
+                    if (!stone) continue;
+
+                    const x = col * CELL_SIZE + CELL_SIZE/2;
+                    const y = row * CELL_SIZE + CELL_SIZE/2;
+
+                    // stone shadow (minimal, to lift from board)
+                    ctx.shadowColor = '#00000015';
+                    ctx.shadowBlur = 4;
+                    ctx.shadowOffsetX = 1;
+                    ctx.shadowOffsetY = 1;
+
+                    // draw stone
+                    ctx.beginPath();
+                    ctx.arc(x, y, RADIUS, 0, 2 * Math.PI);
+
+                    if (stone === 'B') {
+                        ctx.fillStyle = '#1e1e1e';   // near black, slightly soft
+                    } else {
+                        ctx.fillStyle = '#f9f9fa';   // off-white stone
+                    }
+
+                    ctx.fill();
+                    // subtle stroke to define edge
+                    ctx.shadowBlur = 0; // no shadow on stroke
+                    ctx.shadowOffsetX = 0;
+                    ctx.shadowOffsetY = 0;
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = '#666';
+                    ctx.stroke();
+
+                    // reset shadow
+                    ctx.shadowColor = 'transparent';
+                    ctx.shadowBlur = 0;
+                    ctx.shadowOffsetX = 0;
+                    ctx.shadowOffsetY = 0;
+                }
+            }
+        }
+
+        // --- check if current player has won after placing at (row, col) ---
+        function checkWin(row, col, player) {
+            if (board[row][col] !== player) return false;
+
+            const directions = [
+                [1, 0],   // vertical
+                [0, 1],   // horizontal
+                [1, 1],   // diagonal down-right
+                [1, -1]   // diagonal down-left
+            ];
+
+            for (let [dx, dy] of directions) {
+                let count = 1;
+
+                // positive direction
+                for (let step = 1; step < 5; step++) {
+                    const nr = row + dx * step;
+                    const nc = col + dy * step;
+                    if (nr < 0 || nr >= BOARD_SIZE || nc < 0 || nc >= BOARD_SIZE) break;
+                    if (board[nr][nc] === player) count++; else break;
+                }
+
+                // negative direction
+                for (let step = 1; step < 5; step++) {
+                    const nr = row - dx * step;
+                    const nc = col - dy * step;
+                    if (nr < 0 || nr >= BOARD_SIZE || nc < 0 || nc >= BOARD_SIZE) break;
+                    if (board[nr][nc] === player) count++; else break;
+                }
+
+                if (count >= 5) return true;
+            }
+            return false;
+        }
+
+        // --- update UI text (turn / winner) ---
+        function updateStatus() {
+            if (gameOver) {
+                if (winner === 'B') {
+                    turnSpan.innerText = '—';
+                    winMessageSpan.innerText = 'Black wins';
+                } else if (winner === 'W') {
+                    turnSpan.innerText = '—';
+                    winMessageSpan.innerText = 'White wins';
+                } else {
+                    // draw? (no draw detection in basic version, but could happen if board full)
+                    turnSpan.innerText = '—';
+                    winMessageSpan.innerText = 'Draw';
+                }
+            } else {
+                turnSpan.innerText = currentPlayer === 'B' ? 'Black' : 'White';
+                winMessageSpan.innerText = '';  // clear any win message
+            }
+        }
+
+        // --- reset board completely ---
+        function resetGame() {
+            // empty board
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    board[r][c] = null;
+                }
+            }
+            currentPlayer = 'B';
+            gameOver = false;
+            winner = null;
+            drawBoard();
+            updateStatus();
+        }
+
+        // --- attempt to place stone at logical coordinates (row, col) ---
+        function tryPlace(row, col) {
+            // out of bounds or cell occupied or game ended
+            if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return false;
+            if (board[row][col] !== null) return false;
+            if (gameOver) return false;
+
+            // place stone
+            board[row][col] = currentPlayer;
+            drawBoard();
+
+            // check win
+            if (checkWin(row, col, currentPlayer)) {
+                gameOver = true;
+                winner = currentPlayer;
+                updateStatus();
+                drawBoard(); // redraw to keep everything fresh (no change but fine)
+                return true;
+            }
+
+            // check draw condition (board full) – simple, no win, all cells filled?
+            const isFull = board.every(row => row.every(cell => cell !== null));
+            if (isFull) {
+                gameOver = true;
+                winner = null;   // draw
+                updateStatus();
+                drawBoard();
+                return true;
+            }
+
+            // switch player
+            currentPlayer = (currentPlayer === 'B' ? 'W' : 'B');
+            updateStatus();
+            return true;
+        }
+
+        // --- convert mouse event to board coordinates ---
+        function handleCanvasClick(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;   // usually 1 if no css distortion
+            const scaleY = canvas.height / rect.height;
+
+            const mouseCanvasX = (e.clientX - rect.left) * scaleX;
+            const mouseCanvasY = (e.clientY - rect.top) * scaleY;
+
+            // cell index: we snap to nearest intersection (each cell center)
+            const colFloat = (mouseCanvasX - CELL_SIZE/2) / CELL_SIZE;
+            const rowFloat = (mouseCanvasY - CELL_SIZE/2) / CELL_SIZE;
+
+            const col = Math.round(colFloat);
+            const row = Math.round(rowFloat);
+
+            // boundary check (row, col within 0..14)
+            if (row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE) {
+                tryPlace(row, col);
+            }
+        }
+
+        // --- re-draw everything and sync UI after restart ---
+        restartBtn.addEventListener('click', () => {
+            resetGame();
+        });
+
+        // initial draw and event binding
+        canvas.addEventListener('click', handleCanvasClick);
+
+        // initialize board
+        resetGame();
+
+        // (optional) ensure canvas stays crisp if any zoom happens, but fine.
+
+        // Very subtle: Prefer to redraw on any external change? not needed.
+        // But we call drawBoard after reset already.
+    })();
+</script>
+
+</body>
+</html>
